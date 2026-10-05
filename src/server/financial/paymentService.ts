@@ -9,6 +9,13 @@ import { randomBytes } from "node:crypto";
 import { query, queryOne } from "@/server/db/pool";
 import { calculateTax, type TaxDestination } from "./taxService";
 import { postJournalEntry } from "./accountingService";
+// Same seam real auction buy-now/bid-win settlement already charges through
+// (src/server/auctions/service.ts) — this checkout demo reuses it rather
+// than fabricating a second, disconnected "payment always succeeds" path.
+// DemoPaymentProvider declines a payment whose token is in its sentinel
+// set (see provider.ts), which is how processPayment's failure path below
+// gets exercised.
+import { getPaymentProvider } from "@/server/payments/provider";
 
 export interface OrderItem { name: string; sku: string; quantity: number; unitPrice: number }
 export interface CustomerInput { name: string; email: string; country: string; region: string; city: string; postalCode: string }
@@ -78,7 +85,7 @@ async function logEvent(paymentId: string, step: string, detail: Record<string, 
 }
 
 /** Runs the full mock pipeline synchronously, writing a real event per step. */
-export async function processPayment(orderId: string) {
+export async function processPayment(orderId: string, paymentMethodToken?: string) {
   const order = await queryOne<DemoOrderRow>(`select * from demo_orders where id = $1`, [orderId]);
   if (!order) throw new Error("order not found");
   const customer = await queryOne<{ id: string; name: string; email: string }>(`select * from demo_customers where id = $1`, [order.customer_id]);
@@ -93,14 +100,29 @@ export async function processPayment(orderId: string) {
 
   await logEvent(payment.id, "creating_payment", { paymentRef, amount: order.total });
   await logEvent(payment.id, "validating_customer", { customer: customer.name, email: customer.email });
-
   await logEvent(payment.id, "calculating_tax", { jurisdiction: order.tax_jurisdiction, rate: Number(order.tax_rate), taxAmount: Number(order.tax_amount) });
 
   const authorizationRef = demoId("auth");
   await logEvent(payment.id, "authorizing_payment", { authorizationRef });
 
+  const charge = await getPaymentProvider().charge({
+    idempotencyKey: payment.id,
+    amount: Number(order.total),
+    currency: order.currency,
+    paymentMethodToken: paymentMethodToken ?? null,
+  });
+
+  if (charge.status !== "SUCCEEDED") {
+    await logEvent(payment.id, "payment_failed", { reason: charge.reason ?? "Declined by payment provider", providerReference: charge.providerReference });
+    await query(
+      `update demo_payments set status='failed', processor_response=$2, risk_status='high', updated_at=now() where id=$1`,
+      [payment.id, charge.reason ?? "Declined"],
+    );
+    return getPaymentDetail(payment.id);
+  }
+
   const transactionRef = demoId("txn");
-  await logEvent(payment.id, "capturing_payment", { transactionRef, amount: order.total });
+  await logEvent(payment.id, "capturing_payment", { transactionRef, amount: order.total, providerReference: charge.providerReference });
   await logEvent(payment.id, "creating_transaction", { transactionRef });
 
   const entry = await postJournalEntry({

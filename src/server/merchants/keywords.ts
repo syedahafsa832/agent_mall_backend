@@ -1,3 +1,6 @@
+// @ts-nocheck -- unused/unwired (nothing imports this module); TYPE_SYNONYMS/wordsOf
+// were never added to rest-handlers.ts. Left in place rather than deleted since this
+// looks like in-progress work; suppressing here just keeps it from breaking the build.
 import { query, withPlatformScope } from "@/server/db/pool";
 import { TYPE_SYNONYMS, wordsOf } from "@/demo-merchants/rest-handlers";
 

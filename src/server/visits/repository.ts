@@ -38,6 +38,16 @@ export async function createVisitPackage(merchantId: string, visitLimit: number 
   return row;
 }
 
+export async function getLatestVisitPackage(merchantId: string): Promise<VisitPackageRow | undefined> {
+  return withPlatformScope(async (client) => {
+    const res = await client.query<VisitPackageRow>(
+      `select * from visit_packages where merchant_id = $1 order by created_at desc limit 1`,
+      [merchantId],
+    );
+    return res.rows[0];
+  });
+}
+
 export interface RecordVisitResult {
   visit: UniqueVisitRow;
   isNewUniqueVisit: boolean;

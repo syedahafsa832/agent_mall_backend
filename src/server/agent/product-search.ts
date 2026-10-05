@@ -3,6 +3,7 @@ import { matchOffer, parseRequirements, type Requirements } from "@/server/offer
 import type { Offer } from "@/server/offers/types";
 import { recordInsight } from "@/server/insight/service";
 import { recordShoppingEvent } from "@/server/shopping-events/log";
+import { listMerchantKeywords, matchMerchantKeyword } from "@/server/merchants/keywords";
 
 export interface NormalizedOfferResult {
   offer: Offer;
@@ -46,27 +47,43 @@ export async function runProductSearch(
 
   const merchants: MerchantSearchOutcome[] = [];
   const offers: NormalizedOfferResult[] = [];
+  let keywordMatchedMerchantId: string | null = null;
 
   for (const r of results) {
     if (r.blocked || r.error) {
       merchants.push({ merchantId: r.merchant.id, merchantName: r.merchant.name, offers: [], blocked: r.blocked, error: r.error });
       continue;
     }
+    // Keyword relevance is an additional signal, never a gate: every
+    // authorized merchant is still searched and matched on its real catalog
+    // exactly as before. A merchant whose keyword matches the query just
+    // gets a visible "matched your keyword" reason and is ranked first —
+    // it can never surface a product that wasn't already a real offer.
+    const keywords = await listMerchantKeywords(r.merchant.id);
+    const matchedKeyword = matchMerchantKeyword(keywords, input.query);
+    if (matchedKeyword) keywordMatchedMerchantId = r.merchant.id;
+
     const merchantOffers: NormalizedOfferResult[] = [];
     for (const offer of r.offers) {
       const verdict = matchOffer(offer, requirements);
-      const entry: NormalizedOfferResult = { offer, verdict: verdict.decision, reasons: verdict.reasons };
+      const reasons = matchedKeyword && verdict.decision === "selected" ? [...verdict.reasons, `Matches this store's keyword "${matchedKeyword}"`] : verdict.reasons;
+      const entry: NormalizedOfferResult = { offer, verdict: verdict.decision, reasons };
       merchantOffers.push(entry);
       offers.push(entry);
-      await recordInsight({ sessionId: ctx.sessionId, merchantId: offer.merchantId, requirements: requirements as Record<string, unknown>, decision: verdict.decision, reasons: verdict.reasons });
+      await recordInsight({ sessionId: ctx.sessionId, merchantId: offer.merchantId, requirements: requirements as Record<string, unknown>, decision: verdict.decision, reasons });
       await recordShoppingEvent({
         sessionId: ctx.sessionId,
         merchantId: offer.merchantId,
         eventType: verdict.decision === "selected" ? "PRODUCT_MATCHED" : "PRODUCT_EXCLUDED",
-        payload: { productId: offer.productId, reasons: verdict.reasons },
+        payload: { productId: offer.productId, reasons },
       });
     }
     merchants.push({ merchantId: r.merchant.id, merchantName: r.merchant.name, offers: merchantOffers });
+  }
+
+  if (keywordMatchedMerchantId) {
+    merchants.sort((a, b) => (a.merchantId === keywordMatchedMerchantId ? -1 : b.merchantId === keywordMatchedMerchantId ? 1 : 0));
+    offers.sort((a, b) => (a.offer.merchantId === keywordMatchedMerchantId ? -1 : b.offer.merchantId === keywordMatchedMerchantId ? 1 : 0));
   }
 
   return { requirements, merchants, offers };

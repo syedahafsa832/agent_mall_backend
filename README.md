@@ -4,6 +4,27 @@ Backend half of the Agent Mall POC, split out of the original `agentic_commerce`
 monorepo. Copied as-is (API routes, server logic, demo-merchant data, migrations,
 scripts) — nothing rewritten yet.
 
+## Running locally
+
+**Start this backend first, then the frontend** — the frontend's
+`NEXT_PUBLIC_API_BASE_URL` and this repo's `ALLOWED_ORIGINS` are pinned to fixed
+ports (3000 / 3001). If the backend is started twice, or started after something
+else already holds port 3000, Next.js silently falls back to the next free port
+and the frontend will call the wrong origin (symptoms: 404s, login failing,
+CORS errors).
+
+```bash
+npm install
+cp .env.example .env     # fill in DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY, etc.
+npm run dev               # always http://localhost:3000 (port is pinned, no auto-fallback)
+```
+
+Then, in the frontend repo: `npm run dev` → http://localhost:3001.
+
+Visiting `http://localhost:3000` shows a status page listing every API route
+currently registered (method + path), generated from the actual `src/app/api`
+tree — so a 404 at the root is no longer ambiguous with "backend is down."
+
 ## What's here
 - `src/app/api/**` — Next.js route handlers (the actual backend endpoints)
 - `src/server/**` — auth, auctions, payments, tax, offers, policy, connectors, etc.
@@ -11,23 +32,20 @@ scripts) — nothing rewritten yet.
 - `src/lib/types.ts` — shared request/response types (duplicated from frontend repo)
 - `migrations/`, `scripts/` — DB schema + seed/migrate scripts
 
-## Gap this split leaves (needs a decision before this runs standalone)
-This was still a single Next.js app — the "backend" is just the `app/api` route
-tree, not a separate server. As copied, `next build` here will fail: there's no
-`src/app/layout.tsx` / `page.tsx` (those stayed in the frontend repo), which
-Next.js requires at the app root.
+## Gap this split leaves — status
 
-Pick one:
-1. **Add a stub `layout.tsx`/`page.tsx`** here (a few lines each) so this stays a
-   Next.js app that only serves `/api/*`. Simplest, keeps route files unchanged.
-2. **Port the route handlers to Express/Fastify** — more work, but it's then a
-   "real" standalone API server with no Next.js dependency.
+This is still a single Next.js app — the "backend" is just the `app/api` route
+tree, not a separate server. Resolved so far:
+- `src/app/layout.tsx` + `src/app/page.tsx` exist (the latter is the route-index
+  status page described above), so `next build`/`next dev` no longer fail for
+  lacking an app root.
+- CORS is handled in `src/middleware.ts` via `ALLOWED_ORIGINS`.
+- The frontend calls this backend via `NEXT_PUBLIC_API_BASE_URL`, not relative
+  `/api/...` paths, so the two can live on different origins/ports.
 
-Either way, once frontend and backend are different origins:
-- Add CORS handling here (allow the frontend's origin, credentials).
-- The frontend's `src/lib/api.ts` (`apiFetch`) needs an `NEXT_PUBLIC_API_BASE_URL`
-  env var to prefix requests — right now it calls relative `/api/...` paths,
-  which only works when both are the same app/origin.
+Still open: this is a Next.js app serving an API, not a standalone API server.
+Porting the route handlers to Express/Fastify remains an option if that's ever
+needed, but nothing here currently requires it.
 
 ## Env vars to set in this repo (see `.env.example`)
 - `DATABASE_URL` — Postgres connection string
